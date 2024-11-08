@@ -109,3 +109,5 @@ config.local.yml
 config.dev.yml
 *.local.yml
 *.dev.yml
+
+code_context_context.jsonl
