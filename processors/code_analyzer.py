@@ -1,12 +1,9 @@
 import ast
 import re
-from typing import Dict, Any, List, Optional
-import logging
 from dataclasses import dataclass
-from abc import ABC, abstractmethod
-import radon.metrics
-import radon.complexity
-from typing import Set
+from typing import Dict, Any, List, Optional, Set
+import logging
+from .constants import AnalysisKeys as Keys
 
 @dataclass
 class CodeMetrics:
@@ -14,245 +11,198 @@ class CodeMetrics:
     comment_lines: int = 0
     blank_lines: int = 0
     complexity: int = 0
-    functions_count: int = 0
-    classes_count: int = 0
+    maintainability_index: float = 100.0
     max_depth: int = 0
-    dependencies: Set[str] = None
-    maintainability_index: float = 0.0
-    cognitive_complexity: int = 0
-    
-    def __post_init__(self):
-        if self.dependencies is None:
-            self.dependencies = set()
 
-class LanguageAnalyzer(ABC):
-    @abstractmethod
-    def analyze(self, content: str) -> Dict[str, Any]:
-        pass
+class CodeAnalyzer:
+    """Analyzes source code files with language-specific handling."""
     
-    @abstractmethod
-    def calculate_metrics(self, content: str) -> CodeMetrics:
-        pass
-    
-    @abstractmethod
-    def clean_content(self, content: str) -> str:
-        pass
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
 
-class PythonAnalyzer(LanguageAnalyzer):
-    def clean_content(self, content: str) -> str:
-        """Remove comments and normalize whitespace in Python code."""
-        try:
-            # Parse and unparse to remove comments and normalize whitespace
-            tree = ast.parse(content)
-            return ast.unparse(tree)
-        except:
-            # Fallback to regex-based cleaning if parsing fails
-            content = re.sub(r'#.*$', '', content, flags=re.MULTILINE)
-            content = re.sub(r'"""[\s\S]*?"""', '', content)
-            content = re.sub(r"'''[\s\S]*?'''", '', content)
-            return '\n'.join(line for line in content.splitlines() if line.strip())
+    def _calculate_complexity(self, node: ast.AST) -> int:
+        """Calculate cyclomatic complexity."""
+        complexity = 0
+        for child in ast.walk(node):
+            # Count control flow statements
+            if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor,
+                                ast.ExceptHandler, ast.With, ast.AsyncWith,
+                                ast.Assert, ast.Raise)):
+                complexity += 1
+            # Count boolean operators
+            elif isinstance(child, ast.BoolOp):
+                complexity += len(child.values) - 1
+            # Count conditional expressions
+            elif isinstance(child, ast.IfExp):
+                complexity += 1
+        return max(1, complexity)
 
-    def _analyze_imports(self, tree: ast.AST) -> Set[str]:
-        """Analyze imports in Python code."""
+    def _calculate_depth(self, node: ast.AST, current: int = 0) -> int:
+        """Calculate maximum nesting depth."""
+        if isinstance(node, (ast.If, ast.For, ast.While, ast.With,
+                           ast.AsyncFor, ast.AsyncWith)):
+            current += 1
+        
+        max_depth = current
+        for child in ast.iter_child_nodes(node):
+            child_depth = self._calculate_depth(child, current)
+            max_depth = max(max_depth, child_depth)
+        
+        return max_depth
+
+    def _collect_imports(self, tree: ast.AST) -> Set[str]:
+        """Collect all unique imports."""
         imports = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for name in node.names:
                     imports.add(name.name.split('.')[0])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imports.add(node.module.split('.')[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split('.')[0])
         return imports
 
-    def _analyze_functions(self, tree: ast.AST) -> List[Dict[str, Any]]:
-        """Analyze functions in Python code."""
-        functions = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                func_info = {
-                    'name': node.name,
-                    'args': [arg.arg for arg in node.args.args],
-                    'decorators': [ast.unparse(d) for d in node.decorator_list],
-                    'is_async': isinstance(node, ast.AsyncFunctionDef),
-                    'complexity': radon.complexity.cc_visit(node)
-                }
-                functions.append(func_info)
-        return functions
-
-    def _analyze_classes(self, tree: ast.AST) -> List[Dict[str, Any]]:
-        """Analyze classes in Python code."""
-        classes = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                methods = []
-                for child in node.body:
-                    if isinstance(child, ast.FunctionDef):
-                        methods.append({
-                            'name': child.name,
-                            'is_private': child.name.startswith('_'),
-                            'is_async': isinstance(child, ast.AsyncFunctionDef)
-                        })
-                
-                class_info = {
-                    'name': node.name,
-                    'bases': [ast.unparse(base) for base in node.bases],
-                    'methods': methods,
-                    'decorators': [ast.unparse(d) for d in node.decorator_list]
-                }
-                classes.append(class_info)
-        return classes
-
-    def calculate_metrics(self, content: str) -> CodeMetrics:
-        """Calculate code metrics for Python code."""
-        metrics = CodeMetrics()
-        
-        # Basic metrics
-        lines = content.splitlines()
-        metrics.lines_of_code = len(lines)
-        metrics.blank_lines = sum(1 for line in lines if not line.strip())
-        metrics.comment_lines = sum(1 for line in lines if line.strip().startswith('#'))
-        
+    def analyze_python(self, content: str) -> Dict[str, Any]:
+        """Analyze Python source code."""
         try:
             tree = ast.parse(content)
             
-            # Complexity metrics
-            metrics.complexity = radon.complexity.cc_visit(tree)
-            metrics.maintainability_index = radon.metrics.mi_visit(content, True)
+            # Basic metrics
+            lines = content.splitlines()
+            metrics = CodeMetrics(
+                lines_of_code=len(lines),
+                blank_lines=sum(1 for line in lines if not line.strip()),
+                comment_lines=sum(1 for line in lines if line.strip().startswith('#'))
+            )
             
-            # Count functions and classes
-            metrics.functions_count = len([node for node in ast.walk(tree) 
-                                        if isinstance(node, ast.FunctionDef)])
-            metrics.classes_count = len([node for node in ast.walk(tree) 
-                                      if isinstance(node, ast.ClassDef)])
+            # Calculate complexity and depth
+            metrics.complexity = self._calculate_complexity(tree)
+            metrics.max_depth = self._calculate_depth(tree)
             
-            # Calculate maximum nesting depth
-            def get_depth(node: ast.AST, current_depth: int = 0) -> int:
-                if isinstance(node, (ast.For, ast.While, ast.If, ast.With)):
-                    current_depth += 1
-                return max([current_depth] + 
-                         [get_depth(child, current_depth) 
-                          for child in ast.iter_child_nodes(node)])
+            # Analyze code elements
+            imports = self._collect_imports(tree)
+            functions = []
+            classes = []
             
-            metrics.max_depth = get_depth(tree)
-            
-            # Get dependencies
-            metrics.dependencies = self._analyze_imports(tree)
-            
-        except Exception as e:
-            logging.error(f"Error calculating metrics: {e}")
-        
-        return metrics
-
-    def analyze(self, content: str) -> Dict[str, Any]:
-        """Perform comprehensive analysis of Python code."""
-        try:
-            tree = ast.parse(content)
-            metrics = self.calculate_metrics(content)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    functions.append(Keys.function_info(
+                        name=node.name,
+                        args=[arg.arg for arg in node.args.args],
+                        decorators=[ast.unparse(d) for d in node.decorator_list],
+                        is_async=isinstance(node, ast.AsyncFunctionDef)
+                    ))
+                elif isinstance(node, ast.ClassDef):
+                    methods = []
+                    for child in node.body:
+                        if isinstance(child, ast.FunctionDef):
+                            methods.append(Keys.function_info(
+                                name=child.name,
+                                is_async=isinstance(child, ast.AsyncFunctionDef),
+                                decorators=[ast.unparse(d) for d in child.decorator_list]
+                            ))
+                    classes.append(Keys.class_info(
+                        name=node.name,
+                        methods=methods,
+                        bases=[ast.unparse(base) for base in node.bases]
+                    ))
             
             return {
-                'metrics': {
-                    'lines_of_code': metrics.lines_of_code,
-                    'comment_lines': metrics.comment_lines,
-                    'blank_lines': metrics.blank_lines,
-                    'complexity': metrics.complexity,
-                    'maintainability_index': metrics.maintainability_index,
-                    'max_depth': metrics.max_depth
-                },
-                'imports': list(metrics.dependencies),
-                'functions': self._analyze_functions(tree),
-                'classes': self._analyze_classes(tree),
-                'success': True
+                Keys.SUCCESS: True,
+                Keys.METRICS: Keys.metrics_result(metrics),
+                Keys.IMPORTS: list(imports),
+                Keys.FUNCTIONS: functions,
+                Keys.CLASSES: classes
             }
-        except Exception as e:
-            logging.error(f"Error analyzing Python code: {e}")
-            return {'success': False, 'error': str(e)}
-
-class JavaScriptAnalyzer(LanguageAnalyzer):
-    def clean_content(self, content: str) -> str:
-        """Remove comments and normalize whitespace in JavaScript code."""
-        # Remove single-line comments
-        content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
-        # Remove multi-line comments
-        content = re.sub(r'/\*[\s\S]*?\*/', '', content)
-        return '\n'.join(line for line in content.splitlines() if line.strip())
-
-    def calculate_metrics(self, content: str) -> CodeMetrics:
-        metrics = CodeMetrics()
-        lines = content.splitlines()
-        metrics.lines_of_code = len(lines)
-        metrics.blank_lines = sum(1 for line in lines if not line.strip())
-        
-        # Estimate complexity based on control structures
-        control_structures = len(re.findall(r'\b(if|for|while|switch)\b', content))
-        metrics.complexity = control_structures
-        
-        # Count functions and classes
-        metrics.functions_count = len(re.findall(r'\bfunction\s+\w+\s*\(', content))
-        metrics.classes_count = len(re.findall(r'\bclass\s+\w+\b', content))
-        
-        return metrics
-
-    def analyze(self, content: str) -> Dict[str, Any]:
-        """Analyze JavaScript code."""
-        try:
-            cleaned_content = self.clean_content(content)
-            metrics = self.calculate_metrics(cleaned_content)
             
-            # Extract imports/exports
+        except Exception as e:
+            self.logger.error(f'Error analyzing Python code: {e}')
+            return {
+                Keys.SUCCESS: False,
+                Keys.ERROR: str(e)
+            }
+
+    def analyze_javascript(self, content: str) -> Dict[str, Any]:
+        """Analyze JavaScript/TypeScript source code."""
+        try:
+            # Clean comments first
+            content = re.sub('//.*$', '', content, flags=re.MULTILINE)
+            content = re.sub('/\\*[\\s\\S]*?\\*/', '', content)
+            
+            lines = content.splitlines()
+            metrics = CodeMetrics(
+                lines_of_code=len(lines),
+                blank_lines=sum(1 for line in lines if not line.strip())
+            )
+            
+            # Simple complexity estimation
+            control_structures = len(re.findall(r'\b(if|for|while|switch)\b', content))
+            boolean_ops = len(re.findall(r'\b(&&|\|\|)\b', content))
+            ternary_ops = len(re.findall(r'\?.*:(?![^{]*})', content))
+            metrics.complexity = control_structures + boolean_ops + ternary_ops
+            
+            # Estimate max depth by counting nested blocks
+            block_matches = re.findall(r'{(?:[^{}]*|{(?:[^{}]*|{[^{}]*})*})*}', content)
+            metrics.max_depth = max((1 + s.count('{') for s in block_matches), default=0)
+            
+            # Find imports and exports
             imports = re.findall(r'import\s+.*?from\s+[\'"]([^\'"]+)[\'"]', content)
             exports = re.findall(r'export\s+(?:default\s+)?(?:class|function|const|let|var)\s+(\w+)', content)
             
+            # Find functions and classes
+            functions = []
+            for match in re.finditer(r'(?:async\s+)?function\s+(\w+)\s*\((.*?)\)', content):
+                functions.append(Keys.function_info(
+                    name=match.group(1),
+                    is_async=bool(re.match(r'\s*async\s+', match.group(0)))
+                ))
+            
+            classes = []
+            for match in re.finditer(r'class\s+(\w+)(?:\s+extends\s+(\w+))?\s*\{', content):
+                classes.append(Keys.class_info(
+                    name=match.group(1),
+                    bases=[match.group(2)] if match.group(2) else []
+                ))
+            
             return {
-                'metrics': {
-                    'lines_of_code': metrics.lines_of_code,
-                    'blank_lines': metrics.blank_lines,
-                    'complexity': metrics.complexity,
-                    'functions_count': metrics.functions_count,
-                    'classes_count': metrics.classes_count
-                },
-                'imports': imports,
-                'exports': exports,
-                'success': True
+                Keys.SUCCESS: True,
+                Keys.METRICS: Keys.metrics_result(metrics),
+                Keys.IMPORTS: imports,
+                Keys.EXPORTS: exports,
+                Keys.FUNCTIONS: functions,
+                Keys.CLASSES: classes
             }
+            
         except Exception as e:
-            logging.error(f"Error analyzing JavaScript code: {e}")
-            return {'success': False, 'error': str(e)}
-
-class CodeAnalyzer:
-    """Main analyzer class that delegates to language-specific analyzers."""
+            self.logger.error(f'Error analyzing JavaScript code: {e}')
+            return {
+                Keys.SUCCESS: False,
+                Keys.ERROR: str(e)
+            }
     
-    def __init__(self):
-        self.analyzers = {
-            'py': PythonAnalyzer(),
-            'js': JavaScriptAnalyzer(),
-            'jsx': JavaScriptAnalyzer(),
-            'ts': JavaScriptAnalyzer(),
-            'tsx': JavaScriptAnalyzer()
-        }
-        self.logger = logging.getLogger('code_context.analyzer')
-
-    def get_analyzer(self, file_type: str) -> Optional[LanguageAnalyzer]:
-        """Get the appropriate analyzer for a file type."""
-        return self.analyzers.get(file_type.lower())
-
     def analyze_code(self, content: str, file_type: str) -> Dict[str, Any]:
-        """Analyze code content with the appropriate analyzer."""
-        analyzer = self.get_analyzer(file_type)
-        if not analyzer:
-            self.logger.warning(f"No analyzer available for file type: {file_type}")
-            return {'success': False, 'error': f"Unsupported file type: {file_type}"}
-        
-        try:
-            result = analyzer.analyze(content)
-            result['file_type'] = file_type
-            return result
-        except Exception as e:
-            self.logger.error(f"Error analyzing {file_type} code: {e}")
-            return {'success': False, 'error': str(e)}
-
+        """Analyze code content based on file type."""
+        if file_type.lower() in {'py'}:
+            return self.analyze_python(content)
+        elif file_type.lower() in {'js', 'jsx', 'ts', 'tsx'}:
+            return self.analyze_javascript(content)
+        else:
+            return {
+                Keys.SUCCESS: False,
+                Keys.ERROR: f'Unsupported file type: {file_type}'
+            }
+    
     def clean_content(self, content: str, file_type: str) -> str:
-        """Clean code content with the appropriate analyzer."""
-        analyzer = self.get_analyzer(file_type)
-        if not analyzer:
-            return content
-        return analyzer.clean_content(content)
+        """Remove comments and normalize whitespace."""
+        if file_type.lower() == 'py':
+            try:
+                tree = ast.parse(content)
+                return ast.unparse(tree)
+            except:
+                content = re.sub('#.*$', '', content, flags=re.MULTILINE)
+                content = re.sub('"""[\\s\\S]*?"""', '', content)
+                content = re.sub("'''[\\s\\S]*?'''", '', content)
+        else:  # js, jsx, ts, tsx
+            content = re.sub('//.*$', '', content, flags=re.MULTILINE)
+            content = re.sub('/\\*[\\s\\S]*?\\*/', '', content)
+        
+        return '\n'.join(line for line in content.splitlines() if line.strip())
