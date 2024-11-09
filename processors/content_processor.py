@@ -11,7 +11,7 @@ from .code_analyzer import CodeAnalyzer
 from utils import read_file_safely, calculate_file_hash
 import traceback
 
-class OptimizedContentProcessor:
+class ContentProcessor:
     """Processes source code files with optimized performance and memory usage."""
     
     def __init__(self, config: ProcessorConfig):
@@ -29,7 +29,7 @@ class OptimizedContentProcessor:
             'processing_time': 0,
             'total_files': 0,
             'file_types': {},
-            'failed_files_info': []  # New field to track failed files
+            'failed_files_info': []
         }
     
     async def should_process_file(self, file_path: Path) -> bool:

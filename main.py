@@ -6,6 +6,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from config import ProcessorConfig
+from processors.content_processor import ContentProcessor
 
 console = Console()
 
@@ -62,10 +64,7 @@ async def main():
     try:
         console.print(Panel.fit('[bold blue]Code Context Generator[/bold blue]', border_style='blue'))
         args = parse_args()
-        
-        from config import ProcessorConfig
-        from processors.optimized_processor import OptimizedContentProcessor
-        
+
         config = ProcessorConfig(
             target_dir=args.path,
             output_file=args.output,
@@ -75,7 +74,7 @@ async def main():
             verbose=args.verbose
         )
         
-        processor = OptimizedContentProcessor(config)
+        processor = ContentProcessor(config)
         with console.status('[bold green]Processing files...') as status:
             stats = await processor.process()
             
